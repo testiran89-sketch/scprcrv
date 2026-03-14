@@ -33,6 +33,7 @@ const { scanArbitrage, CHAINS } = require('./crv-arb-checker');
 const CHAIN = process.env.CHAIN || 'ethereum';
 const MIN_SPREAD_PCT = Number(process.env.MIN_SPREAD_PCT || 0.3);
 const LOAN_USD = Number(process.env.LOAN_USD || 100000);
+const LOAN_QUOTE = process.env.LOAN_QUOTE ? Number(process.env.LOAN_QUOTE) : null;
 const MAX_OPPS = Number(process.env.MAX_OPPS || 3);
 const DRY_RUN = String(process.env.DRY_RUN || 'true').toLowerCase() === 'true';
 
@@ -90,6 +91,9 @@ const ABI = [
 
 const BALANCER_POOL_ABI = ['function getPoolId() external view returns (bytes32)'];
 const CURVE_POOL_ABI = ['function coins(uint256) external view returns (address)'];
+const ERC20_METADATA_ABI = ['function decimals() view returns (uint8)'];
+const STABLE_QUOTES = new Set(['USDC', 'USDT', 'DAI', 'FRAX']);
+const decimalsCache = new Map();
 
 function isAddress(value) {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value);
@@ -97,6 +101,12 @@ function isAddress(value) {
 
 function isBytes32(value) {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{64}$/.test(value);
+}
+
+function extractLeadingAddress(value) {
+  if (typeof value !== 'string') return null;
+  const first = value.split('-')[0];
+  return isAddress(first) ? first : null;
 }
 
 function toMinOut(amountIn, spreadPct, safetyBps = 5000) {
@@ -134,6 +144,37 @@ async function resolveBalancerPoolId(provider, poolAddress) {
   return pool.getPoolId();
 }
 
+async function getTokenDecimals(provider, token) {
+  const key = token.toLowerCase();
+  if (decimalsCache.has(key)) return decimalsCache.get(key);
+  const c = new ethers.Contract(token, ERC20_METADATA_ABI, provider);
+  const d = Number(await c.decimals());
+  decimalsCache.set(key, d);
+  return d;
+}
+
+async function buildLoanAmount(provider, quoteSymbol, quoteToken) {
+  const decimals = await getTokenDecimals(provider, quoteToken);
+
+  if (STABLE_QUOTES.has(quoteSymbol)) {
+    return {
+      loanAmount: ethers.parseUnits(String(LOAN_USD), decimals),
+      decimals,
+      mode: `usd-notional (${LOAN_USD} ${quoteSymbol})`,
+    };
+  }
+
+  if (LOAN_QUOTE && LOAN_QUOTE > 0) {
+    return {
+      loanAmount: ethers.parseUnits(String(LOAN_QUOTE), decimals),
+      decimals,
+      mode: `quote-notional (${LOAN_QUOTE} ${quoteSymbol})`,
+    };
+  }
+
+  return { loanAmount: null, decimals, mode: `missing LOAN_QUOTE for non-stable quote ${quoteSymbol}` };
+}
+
 async function resolveCurveIndices(provider, poolAddress, tokenIn, tokenOut) {
   const pool = new ethers.Contract(poolAddress, CURVE_POOL_ABI, provider);
   let inIndex = -1;
@@ -162,11 +203,12 @@ async function buildLeg(provider, chain, dexId, poolAddress, tokenIn, tokenOut, 
 
   // Curve: use pool address directly + auto-resolved indices
   if (dexId === 'curve') {
-    const { curveI, curveJ } = await resolveCurveIndices(provider, poolAddress, tokenIn, tokenOut);
+    const curvePoolAddress = extractLeadingAddress(poolAddress) || poolAddress;
+    const { curveI, curveJ } = await resolveCurveIndices(provider, curvePoolAddress, tokenIn, tokenOut);
     return makeLeg(
       {
         kind: 3,
-        addr: poolAddress,
+        addr: curvePoolAddress,
         curveI,
         curveJ,
       },
@@ -184,6 +226,12 @@ async function buildLeg(provider, chain, dexId, poolAddress, tokenIn, tokenOut, 
     // Dexscreener may return Balancer poolId directly in pairAddress.
     if (isBytes32(poolAddress)) {
       poolId = poolAddress;
+    } else if (typeof poolAddress === 'string' && poolAddress.includes('-')) {
+      const poolAddr = extractLeadingAddress(poolAddress);
+      if (!poolAddr) {
+        throw new Error(`Invalid balancer pairAddress: ${poolAddress}`);
+      }
+      poolId = await resolveBalancerPoolId(provider, poolAddr);
     } else if (isAddress(poolAddress)) {
       poolId = await resolveBalancerPoolId(provider, poolAddress);
     } else {
@@ -212,7 +260,7 @@ async function main() {
   if (!CHAINS[CHAIN]) throw new Error(`Unsupported CHAIN: ${CHAIN}`);
 
   console.log(`Executor chain: ${CHAIN}`);
-  console.log(`Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Dry run: ${DRY_RUN}`);
+  console.log(`Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Dry run: ${DRY_RUN}`);
 
   const { allOpportunities } = await scanArbitrage({ sameChainOnly: true });
   const candidates = allOpportunities
@@ -237,9 +285,11 @@ async function main() {
       const crv = chainTokens.CRV;
       if (!loanAsset || !crv) continue;
 
-      // Use 100k quote notional with token decimals approximation = 18.
-      // For production, query decimals() and normalize correctly.
-      const loanAmount = ethers.parseUnits(String(LOAN_USD), 18);
+      const { loanAmount, decimals: quoteDecimals, mode } = await buildLoanAmount(provider, quote, loanAsset);
+      if (!loanAmount) {
+        console.log(`Skipping ${opp.pair}: ${mode}`);
+        continue;
+      }
 
       const buyLeg = await buildLeg(provider, CHAIN, opp.buyDexId, opp.buyPool.pairAddress, loanAsset, crv, loanAmount, 1n);
       if (!buyLeg) {
@@ -248,7 +298,7 @@ async function main() {
       }
 
       // Conservative lower-bound minOut to reduce reverts.
-      const sellAmountOutMinFloat = toMinOut(LOAN_USD, opp.spread, 5000);
+      const sellAmountOutMinFloat = toMinOut(STABLE_QUOTES.has(quote) ? LOAN_USD : LOAN_QUOTE, opp.spread, 5000);
       const sellLeg = await buildLeg(
         provider,
         CHAIN,
@@ -257,14 +307,14 @@ async function main() {
         crv,
         loanAsset,
         0n,
-        ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), 18)
+        ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), quoteDecimals)
       );
       if (!sellLeg) {
         console.log(`Skipping ${opp.pair}: missing sell leg config for dex=${opp.sellDexId}`);
         continue;
       }
 
-      const minProfit = ethers.parseUnits('10', 18);
+      const minProfit = ethers.parseUnits('10', quoteDecimals);
 
       const params = {
         loanAsset,
@@ -277,13 +327,21 @@ async function main() {
 
       console.log(`\nOpportunity: ${opp.pair}`);
       console.log(`buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(3)}%`);
+      console.log(`loan mode=${mode}`);
 
       if (DRY_RUN) {
-        console.log('DRY_RUN=true => tx not sent');
+        try {
+          const est = await contract.startArbitrage.estimateGas(params, { gasLimit: 2_500_000 });
+          console.log(`DRY_RUN=true => tx not sent | estimateGas=${est.toString()}`);
+        } catch (e) {
+          console.log(`DRY_RUN=true => tx not sent | simulation failed: ${e.shortMessage || e.message}`);
+        }
         continue;
       }
 
-      const tx = await contract.startArbitrage(params, { gasLimit: 2_500_000 });
+      const estimatedGas = await contract.startArbitrage.estimateGas(params, { gasLimit: 2_500_000 });
+      const gasLimit = (estimatedGas * 120n) / 100n;
+      const tx = await contract.startArbitrage(params, { gasLimit });
       console.log(`Sent tx: ${tx.hash}`);
       const receipt = await tx.wait();
       console.log(`Mined in block ${receipt.blockNumber}`);

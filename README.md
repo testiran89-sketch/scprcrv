@@ -126,8 +126,13 @@ DRY_RUN=false node crv-arb-executor.js
 | `CHAIN` | `ethereum` / `polygon` / `bsc` | `ethereum` |
 | `MIN_SPREAD_PCT` | حداقل spread برای اجرا | `0.3` |
 | `LOAN_USD` | نُوشنل وام | `100000` |
+| `LOAN_QUOTE` | برای جفت‌های non-stable (مثل WETH) مقدار وام به واحد quote | unset |
 | `MAX_OPPS` | حداکثر فرصت اجرا در هر ران | `3` |
 | `DRY_RUN` | ارسال واقعی تراکنش یا نه | `true` |
+
+نکته مهم:
+- برای quoteهای stable (`USDC/USDT/DAI/FRAX`) مقدار `LOAN_USD` استفاده می‌شود.
+- برای quoteهای non-stable مثل `WETH` باید `LOAN_QUOTE` ست شود؛ در غیر این صورت آن فرصت skip می‌شود.
 
 ---
 
