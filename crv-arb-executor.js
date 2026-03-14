@@ -37,6 +37,7 @@ const LOAN_QUOTE = process.env.LOAN_QUOTE ? Number(process.env.LOAN_QUOTE) : nul
 const LOAN_UTILIZATION_BPS = Number(process.env.LOAN_UTILIZATION_BPS || 500); // 5%
 const MIN_PROFIT_BPS = Number(process.env.MIN_PROFIT_BPS || 0); // relative to loan amount
 const MIN_PROFIT_QUOTE = process.env.MIN_PROFIT_QUOTE ? Number(process.env.MIN_PROFIT_QUOTE) : null;
+const VERBOSE = String(process.env.VERBOSE || 'false').toLowerCase() === 'true';
 const MAX_OPPS = Number(process.env.MAX_OPPS || 3);
 const DRY_RUN = String(process.env.DRY_RUN || 'true').toLowerCase() === 'true';
 
@@ -123,13 +124,6 @@ function normalizeAddress(addr) {
   return addr.toLowerCase();
 }
 
-function toBigIntSafe(value) {
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') return BigInt(Math.floor(value));
-  if (typeof value === 'string') return BigInt(value);
-  return 0n;
-}
-
 function parsePair(pair) {
   const [base, quote] = pair.split('/');
   return { base, quote };
@@ -194,8 +188,13 @@ function applyLiquidityCap(opp, usdNotional) {
   const buyLiq = Number(opp.buyPool?.liquidityUsd || 0);
   const sellLiq = Number(opp.sellPool?.liquidityUsd || 0);
   const cap = Math.min(buyLiq, sellLiq) * (LOAN_UTILIZATION_BPS / 10_000);
-  if (!Number.isFinite(cap) || cap <= 0) return usdNotional;
+  // If scanner has missing/near-zero liquidity, do not force 0-sized notional.
+  if (!Number.isFinite(cap) || cap <= 1) return usdNotional;
   return Math.min(usdNotional, cap);
+}
+
+function maybeLogVerbose(line) {
+  if (VERBOSE) console.log(line);
 }
 
 async function resolveCurveIndices(provider, poolAddress, tokenIn, tokenOut) {
@@ -284,7 +283,7 @@ async function main() {
 
   console.log(`Executor chain: ${CHAIN}`);
   console.log(
-    `Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Utilization: ${LOAN_UTILIZATION_BPS} bps | Dry run: ${DRY_RUN}`
+    `Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Utilization: ${LOAN_UTILIZATION_BPS} bps | Dry run: ${DRY_RUN} | Verbose: ${VERBOSE}`
   );
 
   const { allOpportunities } = await scanArbitrage({ sameChainOnly: true });
@@ -312,20 +311,32 @@ async function main() {
 
       const adjustedLoanUsd = applyLiquidityCap(opp, LOAN_USD);
       const originalLoanUsd = LOAN_USD;
+      const buyLiq = Number(opp.buyPool?.liquidityUsd || 0);
+      const sellLiq = Number(opp.sellPool?.liquidityUsd || 0);
+      maybeLogVerbose(
+        `[liq] pair=${opp.pair} buyDex=${opp.buyDex} sellDex=${opp.sellDex} buyLiqUsd=${buyLiq.toFixed(2)} sellLiqUsd=${sellLiq.toFixed(2)} utilBps=${LOAN_UTILIZATION_BPS}`
+      );
       if (adjustedLoanUsd < LOAN_USD) {
         console.log(`Liquidity cap applied for ${opp.pair}: ${originalLoanUsd} -> ${Math.floor(adjustedLoanUsd)} USD`);
       }
 
-      const priorLoanUsd = LOAN_USD;
       const dynamicLoanUsd = adjustedLoanUsd;
       // local override without changing global env-driven baseline
       const { loanAmount, decimals: quoteDecimals, mode } = await (async () => {
         if (STABLE_QUOTES.has(quote)) {
           const decimals = await getTokenDecimals(provider, loanAsset);
+          const flooredUsd = Math.floor(dynamicLoanUsd);
+          if (flooredUsd < 1) {
+            return {
+              loanAmount: null,
+              decimals,
+              mode: `liquidity-capped below 1 ${quote} (computed ${dynamicLoanUsd.toFixed(6)})`,
+            };
+          }
           return {
-            loanAmount: ethers.parseUnits(String(Math.floor(dynamicLoanUsd)), decimals),
+            loanAmount: ethers.parseUnits(String(flooredUsd), decimals),
             decimals,
-            mode: `usd-notional (${Math.floor(dynamicLoanUsd)} ${quote})`,
+            mode: `usd-notional (${flooredUsd} ${quote})`,
           };
         }
         return buildLoanAmount(provider, quote, loanAsset);
@@ -373,6 +384,9 @@ async function main() {
       console.log(`\nOpportunity: ${opp.pair}`);
       console.log(`buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(3)}%`);
       console.log(`loan mode=${mode} | minProfit=${minProfit.toString()}`);
+      maybeLogVerbose(
+        `[params] quote=${quote} quoteDecimals=${quoteDecimals} loanAmount=${loanAmount?.toString?.() ?? 'null'} buyPairAddress=${opp.buyPool?.pairAddress} sellPairAddress=${opp.sellPool?.pairAddress}`
+      );
 
       if (DRY_RUN) {
         try {

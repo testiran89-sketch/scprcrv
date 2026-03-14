@@ -130,6 +130,7 @@ DRY_RUN=false node crv-arb-executor.js
 | `LOAN_UTILIZATION_BPS` | سقف استفاده از نقدینگی pool (از min buy/sell liquidity) | `500` |
 | `MIN_PROFIT_BPS` | حداقل سود نسبی نسبت به مبلغ وام | `0` |
 | `MIN_PROFIT_QUOTE` | حداقل سود مطلق به واحد quote | unset |
+| `VERBOSE` | لاگ جزئیات بیشتر (liquidity/params) | `false` |
 | `MAX_OPPS` | حداکثر فرصت اجرا در هر ران | `3` |
 | `DRY_RUN` | ارسال واقعی تراکنش یا نه | `true` |
 
@@ -141,6 +142,7 @@ DRY_RUN=false node crv-arb-executor.js
 - `BAL#304` معمولاً به معنی فشار بیش از حد روی نقدینگی pool است؛ با `LOAN_UTILIZATION_BPS` پایین‌تر (مثلاً 100 تا 300) شروع کن.
 - `Too little received` از minOut سخت‌گیرانه می‌آید. در executor جدید minOut فروش روی مقدار حداقلی تنظیم شده و کنترل سود با `minProfit` داخل قرارداد انجام می‌شود.
 - `bad address checksum` معمولاً از آدرس‌های mixed-case ناسازگار می‌آید؛ executor آدرس‌ها را normalize می‌کند و pairAddressهای composite را parse می‌کند.
+- اگر پیام `Liquidity cap applied ... -> 0 USD` دیدی، یعنی نقدینگی گزارش‌شده برای آن pool خیلی کم/ناقص بوده یا utilization خیلی پایین است. در نسخه جدید این حالت به‌صورت شفاف log می‌شود و اجباری به 0 نمی‌افتد مگر واقعاً cap زیر 1 واحد باشد.
 
 ---
 
