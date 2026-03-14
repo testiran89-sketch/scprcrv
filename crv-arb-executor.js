@@ -34,6 +34,9 @@ const CHAIN = process.env.CHAIN || 'ethereum';
 const MIN_SPREAD_PCT = Number(process.env.MIN_SPREAD_PCT || 0.3);
 const LOAN_USD = Number(process.env.LOAN_USD || 100000);
 const LOAN_QUOTE = process.env.LOAN_QUOTE ? Number(process.env.LOAN_QUOTE) : null;
+const LOAN_UTILIZATION_BPS = Number(process.env.LOAN_UTILIZATION_BPS || 500); // 5%
+const MIN_PROFIT_BPS = Number(process.env.MIN_PROFIT_BPS || 0); // relative to loan amount
+const MIN_PROFIT_QUOTE = process.env.MIN_PROFIT_QUOTE ? Number(process.env.MIN_PROFIT_QUOTE) : null;
 const MAX_OPPS = Number(process.env.MAX_OPPS || 3);
 const DRY_RUN = String(process.env.DRY_RUN || 'true').toLowerCase() === 'true';
 
@@ -115,6 +118,18 @@ function toMinOut(amountIn, spreadPct, safetyBps = 5000) {
   return amountIn * factor;
 }
 
+function normalizeAddress(addr) {
+  if (!isAddress(addr)) return addr;
+  return addr.toLowerCase();
+}
+
+function toBigIntSafe(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(Math.floor(value));
+  if (typeof value === 'string') return BigInt(value);
+  return 0n;
+}
+
 function parsePair(pair) {
   const [base, quote] = pair.split('/');
   return { base, quote };
@@ -127,9 +142,9 @@ function routerConfig(chain, dexId) {
 function makeLeg(cfg, tokenIn, tokenOut, amountIn, amountOutMin) {
   return {
     dexKind: cfg.kind,
-    routerOrPool: cfg.addr,
-    tokenIn,
-    tokenOut,
+    routerOrPool: normalizeAddress(cfg.addr),
+    tokenIn: normalizeAddress(tokenIn),
+    tokenOut: normalizeAddress(tokenOut),
     amountIn,
     amountOutMin,
     v3Fee: cfg.v3Fee || 0,
@@ -173,6 +188,14 @@ async function buildLoanAmount(provider, quoteSymbol, quoteToken) {
   }
 
   return { loanAmount: null, decimals, mode: `missing LOAN_QUOTE for non-stable quote ${quoteSymbol}` };
+}
+
+function applyLiquidityCap(opp, usdNotional) {
+  const buyLiq = Number(opp.buyPool?.liquidityUsd || 0);
+  const sellLiq = Number(opp.sellPool?.liquidityUsd || 0);
+  const cap = Math.min(buyLiq, sellLiq) * (LOAN_UTILIZATION_BPS / 10_000);
+  if (!Number.isFinite(cap) || cap <= 0) return usdNotional;
+  return Math.min(usdNotional, cap);
 }
 
 async function resolveCurveIndices(provider, poolAddress, tokenIn, tokenOut) {
@@ -260,7 +283,9 @@ async function main() {
   if (!CHAINS[CHAIN]) throw new Error(`Unsupported CHAIN: ${CHAIN}`);
 
   console.log(`Executor chain: ${CHAIN}`);
-  console.log(`Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Dry run: ${DRY_RUN}`);
+  console.log(
+    `Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Utilization: ${LOAN_UTILIZATION_BPS} bps | Dry run: ${DRY_RUN}`
+  );
 
   const { allOpportunities } = await scanArbitrage({ sameChainOnly: true });
   const candidates = allOpportunities
@@ -281,11 +306,30 @@ async function main() {
     try {
       const { quote } = parsePair(opp.pair);
       const chainTokens = CHAINS[CHAIN].tokens;
-      const loanAsset = chainTokens[quote];
-      const crv = chainTokens.CRV;
+      const loanAsset = normalizeAddress(chainTokens[quote]);
+      const crv = normalizeAddress(chainTokens.CRV);
       if (!loanAsset || !crv) continue;
 
-      const { loanAmount, decimals: quoteDecimals, mode } = await buildLoanAmount(provider, quote, loanAsset);
+      const adjustedLoanUsd = applyLiquidityCap(opp, LOAN_USD);
+      const originalLoanUsd = LOAN_USD;
+      if (adjustedLoanUsd < LOAN_USD) {
+        console.log(`Liquidity cap applied for ${opp.pair}: ${originalLoanUsd} -> ${Math.floor(adjustedLoanUsd)} USD`);
+      }
+
+      const priorLoanUsd = LOAN_USD;
+      const dynamicLoanUsd = adjustedLoanUsd;
+      // local override without changing global env-driven baseline
+      const { loanAmount, decimals: quoteDecimals, mode } = await (async () => {
+        if (STABLE_QUOTES.has(quote)) {
+          const decimals = await getTokenDecimals(provider, loanAsset);
+          return {
+            loanAmount: ethers.parseUnits(String(Math.floor(dynamicLoanUsd)), decimals),
+            decimals,
+            mode: `usd-notional (${Math.floor(dynamicLoanUsd)} ${quote})`,
+          };
+        }
+        return buildLoanAmount(provider, quote, loanAsset);
+      })();
       if (!loanAmount) {
         console.log(`Skipping ${opp.pair}: ${mode}`);
         continue;
@@ -297,8 +341,7 @@ async function main() {
         continue;
       }
 
-      // Conservative lower-bound minOut to reduce reverts.
-      const sellAmountOutMinFloat = toMinOut(STABLE_QUOTES.has(quote) ? LOAN_USD : LOAN_QUOTE, opp.spread, 5000);
+      // Avoid DEX-level "Too little received" from optimistic minOut; rely on contract minProfit/unprofitability checks.
       const sellLeg = await buildLeg(
         provider,
         CHAIN,
@@ -307,14 +350,16 @@ async function main() {
         crv,
         loanAsset,
         0n,
-        ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), quoteDecimals)
+        1n
       );
       if (!sellLeg) {
         console.log(`Skipping ${opp.pair}: missing sell leg config for dex=${opp.sellDexId}`);
         continue;
       }
 
-      const minProfit = ethers.parseUnits('10', quoteDecimals);
+      const minProfitFromBps = (loanAmount * BigInt(MIN_PROFIT_BPS)) / 10_000n;
+      const minProfitFromAbs = MIN_PROFIT_QUOTE ? ethers.parseUnits(String(MIN_PROFIT_QUOTE), quoteDecimals) : 0n;
+      const minProfit = minProfitFromAbs > minProfitFromBps ? minProfitFromAbs : minProfitFromBps;
 
       const params = {
         loanAsset,
@@ -327,7 +372,7 @@ async function main() {
 
       console.log(`\nOpportunity: ${opp.pair}`);
       console.log(`buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(3)}%`);
-      console.log(`loan mode=${mode}`);
+      console.log(`loan mode=${mode} | minProfit=${minProfit.toString()}`);
 
       if (DRY_RUN) {
         try {

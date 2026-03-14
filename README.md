@@ -127,12 +127,20 @@ DRY_RUN=false node crv-arb-executor.js
 | `MIN_SPREAD_PCT` | حداقل spread برای اجرا | `0.3` |
 | `LOAN_USD` | نُوشنل وام | `100000` |
 | `LOAN_QUOTE` | برای جفت‌های non-stable (مثل WETH) مقدار وام به واحد quote | unset |
+| `LOAN_UTILIZATION_BPS` | سقف استفاده از نقدینگی pool (از min buy/sell liquidity) | `500` |
+| `MIN_PROFIT_BPS` | حداقل سود نسبی نسبت به مبلغ وام | `0` |
+| `MIN_PROFIT_QUOTE` | حداقل سود مطلق به واحد quote | unset |
 | `MAX_OPPS` | حداکثر فرصت اجرا در هر ران | `3` |
 | `DRY_RUN` | ارسال واقعی تراکنش یا نه | `true` |
 
 نکته مهم:
 - برای quoteهای stable (`USDC/USDT/DAI/FRAX`) مقدار `LOAN_USD` استفاده می‌شود.
 - برای quoteهای non-stable مثل `WETH` باید `LOAN_QUOTE` ست شود؛ در غیر این صورت آن فرصت skip می‌شود.
+
+توضیح خطاهای رایج:
+- `BAL#304` معمولاً به معنی فشار بیش از حد روی نقدینگی pool است؛ با `LOAN_UTILIZATION_BPS` پایین‌تر (مثلاً 100 تا 300) شروع کن.
+- `Too little received` از minOut سخت‌گیرانه می‌آید. در executor جدید minOut فروش روی مقدار حداقلی تنظیم شده و کنترل سود با `minProfit` داخل قرارداد انجام می‌شود.
+- `bad address checksum` معمولاً از آدرس‌های mixed-case ناسازگار می‌آید؛ executor آدرس‌ها را normalize می‌کند و pairAddressهای composite را parse می‌کند.
 
 ---
 
