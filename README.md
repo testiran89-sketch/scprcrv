@@ -77,14 +77,15 @@ DRY_RUN=false node crv-arb-executor.js
 - `aavePool`: آدرس Pool در شبکه هدف
 - `profitRecipient`: آدرس مقصد برداشت سود
 
-### قدم 2: تکمیل آدرس DEXها
+### قدم 2: وضعیت آدرس DEXها (نسخه تکمیل‌شده)
 
-در `crv-arb-executor.js` داخل `ADDRESSES` بعضی آدرس‌ها placeholder هستند (`ZeroAddress` / `ZeroHash`).
-قبل از اجرا باید:
+در نسخه فعلی executor:
 
-- router/pool واقعی هر DEX روی همان چین را جایگزین کنی
-- برای Balancer مقدار `poolId` واقعی بدهی
-- برای Curve مقدار pool و index صحیح (`curveI`, `curveJ`) را ست کنی
+- برای DEXهای V2/V3 (Uniswap/Sushi/QuickSwap/Pancake/Fraxswap) آدرس router در `ADDRESSES` تنظیم شده است.
+- برای **Balancer** دیگر نیازی به وارد کردن دستی `poolId` نیست؛ اسکریپت `poolId` را مستقیماً از خود pool (`getPoolId`) می‌خواند.
+- برای **Curve** دیگر نیازی به وارد کردن دستی `curveI/curveJ` نیست؛ اسکریپت با خواندن `coins(i)` اندیس درست را پیدا می‌کند.
+
+نکته: اگر برای شبکه/DEX خاص هنوز router موجود نباشد، executor همان فرصت را skip می‌کند و پیام می‌دهد.
 
 ### قدم 3: تایید decimals توکن‌ها
 
@@ -142,4 +143,3 @@ DRY_RUN=false node crv-arb-executor.js
 - افزودن simulation قبل از ارسال تراکنش (`callStatic` / quote API)
 - افزودن token decimals واقعی به executor
 - نوشتن تست unit/integration برای مسیرهای swap
-

@@ -284,7 +284,27 @@ contract CrvFlashArb is IAaveV3FlashLoanSimpleReceiver {
 
         if (s.dexKind == DexKind.CURVE) {
             _safeApprove(s.tokenIn, s.routerOrPool, s.amountIn);
-            return ICurvePool(s.routerOrPool).exchange(s.curveI, s.curveJ, s.amountIn, s.amountOutMin);
+
+            // Try legacy int128 signature first.
+            (bool okInt128, bytes memory dataInt128) = s.routerOrPool.call(
+                abi.encodeWithSelector(ICurvePool.exchange.selector, s.curveI, s.curveJ, s.amountIn, s.amountOutMin)
+            );
+            if (okInt128 && dataInt128.length >= 32) {
+                return abi.decode(dataInt128, (uint256));
+            }
+
+            // Fallback for pools with uint256 index signature: exchange(uint256,uint256,uint256,uint256)
+            (bool okUint256, bytes memory dataUint256) = s.routerOrPool.call(
+                abi.encodeWithSignature(
+                    "exchange(uint256,uint256,uint256,uint256)",
+                    uint256(uint128(s.curveI)),
+                    uint256(uint128(s.curveJ)),
+                    s.amountIn,
+                    s.amountOutMin
+                )
+            );
+            require(okUint256 && dataUint256.length >= 32, "CURVE_SWAP_FAIL");
+            return abi.decode(dataUint256, (uint256));
         }
 
         revert("UNSUPPORTED_DEX");

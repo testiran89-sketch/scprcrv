@@ -38,17 +38,16 @@ if (!RPC_URL || !PRIVATE_KEY || !FLASH_ARB_CONTRACT) {
   process.exit(1);
 }
 
-// IMPORTANT: Fill these real addresses before live trading.
 const ADDRESSES = {
   ethereum: {
     aavePool: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fa4E2',
     routers: {
       uniswap: { kind: 1, addr: '0xE592427A0AEce92De3Edee1F18E0157C05861564', v3Fee: 3000 },
       sushiswap: { kind: 0, addr: '0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F' },
-      curve: { kind: 3, addr: ethers.ZeroAddress, curveI: 0, curveJ: 1 },
-      balancer: { kind: 2, addr: '0xBA12222222228d8Ba445958a75a0704d566BF2C8', poolId: ethers.ZeroHash },
-      pancakeswap: { kind: 0, addr: ethers.ZeroAddress },
-      fraxswap: { kind: 0, addr: ethers.ZeroAddress },
+      curve: { kind: 3 },
+      balancer: { kind: 2, addr: '0xBA12222222228d8Ba445958a75a0704d566BF2C8' },
+      pancakeswap: { kind: 0, addr: '0xEfF92A263d31888d860bD50809A8D171709b7b1c' },
+      fraxswap: { kind: 0, addr: '0xC14d550632db8592D1243Edc8B95b0Ad06703867' },
       quickswap: { kind: 0, addr: ethers.ZeroAddress },
     },
   },
@@ -57,9 +56,9 @@ const ADDRESSES = {
     routers: {
       uniswap: { kind: 1, addr: '0xE592427A0AEce92De3Edee1F18E0157C05861564', v3Fee: 3000 },
       sushiswap: { kind: 0, addr: '0x1b02da8cb0d097eb8d57a175b88c7d8b47997506' },
-      curve: { kind: 3, addr: ethers.ZeroAddress, curveI: 0, curveJ: 1 },
-      balancer: { kind: 2, addr: '0xBA12222222228d8Ba445958a75a0704d566BF2C8', poolId: ethers.ZeroHash },
-      pancakeswap: { kind: 0, addr: ethers.ZeroAddress },
+      curve: { kind: 3 },
+      balancer: { kind: 2, addr: '0xBA12222222228d8Ba445958a75a0704d566BF2C8' },
+      pancakeswap: { kind: 0, addr: '0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb' },
       fraxswap: { kind: 0, addr: ethers.ZeroAddress },
       quickswap: { kind: 0, addr: '0xa5E0829CaCED8fFDD4De3c43696c57F7D7A678ff' },
     },
@@ -81,6 +80,9 @@ const ADDRESSES = {
 const ABI = [
   'function startArbitrage((address loanAsset,uint256 loanAmount,address crvToken,(uint8 dexKind,address routerOrPool,address tokenIn,address tokenOut,uint256 amountIn,uint256 amountOutMin,uint24 v3Fee,bytes32 balancerPoolId,int128 curveI,int128 curveJ) buyLeg,(uint8 dexKind,address routerOrPool,address tokenIn,address tokenOut,uint256 amountIn,uint256 amountOutMin,uint24 v3Fee,bytes32 balancerPoolId,int128 curveI,int128 curveJ) sellLeg,uint256 minProfit) p) external',
 ];
+
+const BALANCER_POOL_ABI = ['function getPoolId() external view returns (bytes32)'];
+const CURVE_POOL_ABI = ['function coins(uint256) external view returns (address)'];
 
 function toMinOut(amountIn, spreadPct, safetyBps = 5000) {
   // conservative: expect only 50% of theoretical spread
@@ -112,6 +114,75 @@ function makeLeg(cfg, tokenIn, tokenOut, amountIn, amountOutMin) {
   };
 }
 
+async function resolveBalancerPoolId(provider, poolAddress) {
+  const pool = new ethers.Contract(poolAddress, BALANCER_POOL_ABI, provider);
+  return pool.getPoolId();
+}
+
+async function resolveCurveIndices(provider, poolAddress, tokenIn, tokenOut) {
+  const pool = new ethers.Contract(poolAddress, CURVE_POOL_ABI, provider);
+  let inIndex = -1;
+  let outIndex = -1;
+
+  for (let i = 0; i < 8; i++) {
+    try {
+      const coin = (await pool.coins(i)).toLowerCase();
+      if (coin === tokenIn.toLowerCase()) inIndex = i;
+      if (coin === tokenOut.toLowerCase()) outIndex = i;
+    } catch (_) {
+      break;
+    }
+  }
+
+  if (inIndex < 0 || outIndex < 0) {
+    throw new Error(`Curve indices not found for pool=${poolAddress} tokenIn=${tokenIn} tokenOut=${tokenOut}`);
+  }
+
+  return { curveI: inIndex, curveJ: outIndex };
+}
+
+async function buildLeg(provider, chain, dexId, poolAddress, tokenIn, tokenOut, amountIn, amountOutMin) {
+  const cfg = routerConfig(chain, dexId);
+  if (!cfg) return null;
+
+  // Curve: use pool address directly + auto-resolved indices
+  if (dexId === 'curve') {
+    const { curveI, curveJ } = await resolveCurveIndices(provider, poolAddress, tokenIn, tokenOut);
+    return makeLeg(
+      {
+        kind: 3,
+        addr: poolAddress,
+        curveI,
+        curveJ,
+      },
+      tokenIn,
+      tokenOut,
+      amountIn,
+      amountOutMin
+    );
+  }
+
+  // Balancer: router is vault + poolId resolved from pool contract
+  if (dexId === 'balancer') {
+    const poolId = await resolveBalancerPoolId(provider, poolAddress);
+    return makeLeg(
+      {
+        kind: 2,
+        addr: cfg.addr,
+        poolId,
+      },
+      tokenIn,
+      tokenOut,
+      amountIn,
+      amountOutMin
+    );
+  }
+
+  // v2/v3: fixed router config
+  if (!cfg.addr || cfg.addr === ethers.ZeroAddress) return null;
+  return makeLeg(cfg, tokenIn, tokenOut, amountIn, amountOutMin);
+}
+
 async function main() {
   if (!CHAINS[CHAIN]) throw new Error(`Unsupported CHAIN: ${CHAIN}`);
 
@@ -137,23 +208,32 @@ async function main() {
     const crv = chainTokens.CRV;
     if (!loanAsset || !crv) continue;
 
-    const buyCfg = routerConfig(CHAIN, opp.buyDexId);
-    const sellCfg = routerConfig(CHAIN, opp.sellDexId);
-    if (!buyCfg || !sellCfg) continue;
-    if (buyCfg.addr === ethers.ZeroAddress || sellCfg.addr === ethers.ZeroAddress) {
-      console.log(`Skipping ${opp.pair}: router/pool address missing (${opp.buyDexId} or ${opp.sellDexId})`);
-      continue;
-    }
-
     // Use 100k quote notional with token decimals approximation = 18.
     // For production, query decimals() and normalize correctly.
     const loanAmount = ethers.parseUnits(String(LOAN_USD), 18);
 
-    const buyLeg = makeLeg(buyCfg, loanAsset, crv, loanAmount, 1n);
+    const buyLeg = await buildLeg(provider, CHAIN, opp.buyDexId, opp.buyPool.pairAddress, loanAsset, crv, loanAmount, 1n);
+    if (!buyLeg) {
+      console.log(`Skipping ${opp.pair}: missing buy leg config for dex=${opp.buyDexId}`);
+      continue;
+    }
 
     // Conservative lower-bound minOut to reduce reverts.
     const sellAmountOutMinFloat = toMinOut(LOAN_USD, opp.spread, 5000);
-    const sellLeg = makeLeg(sellCfg, crv, loanAsset, 0n, ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), 18));
+    const sellLeg = await buildLeg(
+      provider,
+      CHAIN,
+      opp.sellDexId,
+      opp.sellPool.pairAddress,
+      crv,
+      loanAsset,
+      0n,
+      ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), 18)
+    );
+    if (!sellLeg) {
+      console.log(`Skipping ${opp.pair}: missing sell leg config for dex=${opp.sellDexId}`);
+      continue;
+    }
 
     const minProfit = ethers.parseUnits('10', 18);
 
