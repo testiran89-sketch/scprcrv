@@ -11,6 +11,7 @@
     "exec:dry": "DRY_RUN=true node crv-arb-executor.js"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "ethers": "^6.13.2"
   }
 }

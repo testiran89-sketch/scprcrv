@@ -58,6 +58,13 @@ node crv-arb-checker.js --same-chain
 node crv-arb-executor.js
 ```
 
+اگر `.env` مقدار `CHAIN=polygon` داشته باشد، executor روی Polygon اجرا می‌شود.
+برای اجرای مستقیم روی Polygon هم می‌توانی اینطور بزنی:
+
+```bash
+CHAIN=polygon node crv-arb-executor.js
+```
+
 پیش‌فرض `DRY_RUN=true` است، یعنی تراکنش واقعی ارسال نمی‌شود.
 
 برای اجرای واقعی:

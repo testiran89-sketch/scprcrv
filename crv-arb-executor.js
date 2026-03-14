@@ -21,6 +21,13 @@
  */
 
 const { ethers } = require('ethers');
+try {
+  // Optional: auto-load .env for local runs
+  // eslint-disable-next-line global-require
+  require('dotenv').config();
+} catch (_) {
+  // dotenv is optional; env vars can still be provided by shell
+}
 const { scanArbitrage, CHAINS } = require('./crv-arb-checker');
 
 const CHAIN = process.env.CHAIN || 'ethereum';
@@ -185,6 +192,9 @@ async function buildLeg(provider, chain, dexId, poolAddress, tokenIn, tokenOut, 
 
 async function main() {
   if (!CHAINS[CHAIN]) throw new Error(`Unsupported CHAIN: ${CHAIN}`);
+
+  console.log(`Executor chain: ${CHAIN}`);
+  console.log(`Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Dry run: ${DRY_RUN}`);
 
   const { allOpportunities } = await scanArbitrage({ sameChainOnly: true });
   const candidates = allOpportunities
