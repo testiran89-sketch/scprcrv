@@ -91,6 +91,14 @@ const ABI = [
 const BALANCER_POOL_ABI = ['function getPoolId() external view returns (bytes32)'];
 const CURVE_POOL_ABI = ['function coins(uint256) external view returns (address)'];
 
+function isAddress(value) {
+  return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value);
+}
+
+function isBytes32(value) {
+  return typeof value === 'string' && /^0x[a-fA-F0-9]{64}$/.test(value);
+}
+
 function toMinOut(amountIn, spreadPct, safetyBps = 5000) {
   // conservative: expect only 50% of theoretical spread
   const factor = 1 + (spreadPct / 100) * (safetyBps / 10000);
@@ -171,7 +179,17 @@ async function buildLeg(provider, chain, dexId, poolAddress, tokenIn, tokenOut, 
 
   // Balancer: router is vault + poolId resolved from pool contract
   if (dexId === 'balancer') {
-    const poolId = await resolveBalancerPoolId(provider, poolAddress);
+    let poolId;
+
+    // Dexscreener may return Balancer poolId directly in pairAddress.
+    if (isBytes32(poolAddress)) {
+      poolId = poolAddress;
+    } else if (isAddress(poolAddress)) {
+      poolId = await resolveBalancerPoolId(provider, poolAddress);
+    } else {
+      throw new Error(`Invalid balancer pairAddress: ${poolAddress}`);
+    }
+
     return makeLeg(
       {
         kind: 2,
@@ -212,62 +230,66 @@ async function main() {
   const contract = new ethers.Contract(FLASH_ARB_CONTRACT, ABI, wallet);
 
   for (const opp of candidates) {
-    const { quote } = parsePair(opp.pair);
-    const chainTokens = CHAINS[CHAIN].tokens;
-    const loanAsset = chainTokens[quote];
-    const crv = chainTokens.CRV;
-    if (!loanAsset || !crv) continue;
+    try {
+      const { quote } = parsePair(opp.pair);
+      const chainTokens = CHAINS[CHAIN].tokens;
+      const loanAsset = chainTokens[quote];
+      const crv = chainTokens.CRV;
+      if (!loanAsset || !crv) continue;
 
-    // Use 100k quote notional with token decimals approximation = 18.
-    // For production, query decimals() and normalize correctly.
-    const loanAmount = ethers.parseUnits(String(LOAN_USD), 18);
+      // Use 100k quote notional with token decimals approximation = 18.
+      // For production, query decimals() and normalize correctly.
+      const loanAmount = ethers.parseUnits(String(LOAN_USD), 18);
 
-    const buyLeg = await buildLeg(provider, CHAIN, opp.buyDexId, opp.buyPool.pairAddress, loanAsset, crv, loanAmount, 1n);
-    if (!buyLeg) {
-      console.log(`Skipping ${opp.pair}: missing buy leg config for dex=${opp.buyDexId}`);
-      continue;
+      const buyLeg = await buildLeg(provider, CHAIN, opp.buyDexId, opp.buyPool.pairAddress, loanAsset, crv, loanAmount, 1n);
+      if (!buyLeg) {
+        console.log(`Skipping ${opp.pair}: missing buy leg config for dex=${opp.buyDexId}`);
+        continue;
+      }
+
+      // Conservative lower-bound minOut to reduce reverts.
+      const sellAmountOutMinFloat = toMinOut(LOAN_USD, opp.spread, 5000);
+      const sellLeg = await buildLeg(
+        provider,
+        CHAIN,
+        opp.sellDexId,
+        opp.sellPool.pairAddress,
+        crv,
+        loanAsset,
+        0n,
+        ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), 18)
+      );
+      if (!sellLeg) {
+        console.log(`Skipping ${opp.pair}: missing sell leg config for dex=${opp.sellDexId}`);
+        continue;
+      }
+
+      const minProfit = ethers.parseUnits('10', 18);
+
+      const params = {
+        loanAsset,
+        loanAmount,
+        crvToken: crv,
+        buyLeg,
+        sellLeg,
+        minProfit,
+      };
+
+      console.log(`\nOpportunity: ${opp.pair}`);
+      console.log(`buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(3)}%`);
+
+      if (DRY_RUN) {
+        console.log('DRY_RUN=true => tx not sent');
+        continue;
+      }
+
+      const tx = await contract.startArbitrage(params, { gasLimit: 2_500_000 });
+      console.log(`Sent tx: ${tx.hash}`);
+      const receipt = await tx.wait();
+      console.log(`Mined in block ${receipt.blockNumber}`);
+    } catch (err) {
+      console.log(`Skipping ${opp.pair} due to leg-build/send error: ${err.shortMessage || err.message}`);
     }
-
-    // Conservative lower-bound minOut to reduce reverts.
-    const sellAmountOutMinFloat = toMinOut(LOAN_USD, opp.spread, 5000);
-    const sellLeg = await buildLeg(
-      provider,
-      CHAIN,
-      opp.sellDexId,
-      opp.sellPool.pairAddress,
-      crv,
-      loanAsset,
-      0n,
-      ethers.parseUnits(String(Math.floor(sellAmountOutMinFloat)), 18)
-    );
-    if (!sellLeg) {
-      console.log(`Skipping ${opp.pair}: missing sell leg config for dex=${opp.sellDexId}`);
-      continue;
-    }
-
-    const minProfit = ethers.parseUnits('10', 18);
-
-    const params = {
-      loanAsset,
-      loanAmount,
-      crvToken: crv,
-      buyLeg,
-      sellLeg,
-      minProfit,
-    };
-
-    console.log(`\nOpportunity: ${opp.pair}`);
-    console.log(`buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(3)}%`);
-
-    if (DRY_RUN) {
-      console.log('DRY_RUN=true => tx not sent');
-      continue;
-    }
-
-    const tx = await contract.startArbitrage(params, { gasLimit: 2_500_000 });
-    console.log(`Sent tx: ${tx.hash}`);
-    const receipt = await tx.wait();
-    console.log(`Mined in block ${receipt.blockNumber}`);
   }
 }
 

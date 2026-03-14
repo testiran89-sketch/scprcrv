@@ -90,6 +90,7 @@ DRY_RUN=false node crv-arb-executor.js
 
 - برای DEXهای V2/V3 (Uniswap/Sushi/QuickSwap/Pancake/Fraxswap) آدرس router در `ADDRESSES` تنظیم شده است.
 - برای **Balancer** دیگر نیازی به وارد کردن دستی `poolId` نیست؛ اسکریپت `poolId` را مستقیماً از خود pool (`getPoolId`) می‌خواند.
+- اگر `pairAddress` در Balancer از نوع `bytes32` باشد (خود `poolId`)، همان مستقیم استفاده می‌شود و دیگر call اضافه‌ای زده نمی‌شود.
 - برای **Curve** دیگر نیازی به وارد کردن دستی `curveI/curveJ` نیست؛ اسکریپت با خواندن `coins(i)` اندیس درست را پیدا می‌کند.
 
 نکته: اگر برای شبکه/DEX خاص هنوز router موجود نباشد، executor همان فرصت را skip می‌کند و پیام می‌دهد.
