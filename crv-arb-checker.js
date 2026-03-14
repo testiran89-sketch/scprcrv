@@ -149,6 +149,7 @@ function collectPricesForPair(pair, poolsByChain) {
         dexId,
         dex: DEX_ALIAS[dexId] || pool.dexId,
         price: px,
+        crvPriceUsd: Number.parseFloat(pool.priceUsd || 0),
         liquidityUsd: Number.parseFloat(pool.liquidity?.usd || 0),
         pairAddress: pool.pairAddress,
         url: pool.url,

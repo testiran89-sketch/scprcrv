@@ -35,6 +35,7 @@ const MIN_SPREAD_PCT = Number(process.env.MIN_SPREAD_PCT || 0.3);
 const LOAN_USD = Number(process.env.LOAN_USD || 100000);
 const LOAN_QUOTE = process.env.LOAN_QUOTE ? Number(process.env.LOAN_QUOTE) : null;
 const LOAN_UTILIZATION_BPS = Number(process.env.LOAN_UTILIZATION_BPS || 500); // 5%
+const MIN_POOL_LIQUIDITY_USD = Number(process.env.MIN_POOL_LIQUIDITY_USD || 10000);
 const MIN_PROFIT_BPS = Number(process.env.MIN_PROFIT_BPS || 0); // relative to loan amount
 const MIN_PROFIT_QUOTE = process.env.MIN_PROFIT_QUOTE ? Number(process.env.MIN_PROFIT_QUOTE) : null;
 const VERBOSE = String(process.env.VERBOSE || 'false').toLowerCase() === 'true';
@@ -193,6 +194,15 @@ function applyLiquidityCap(opp, usdNotional) {
   return Math.min(usdNotional, cap);
 }
 
+function estimateQuoteFromUsdCap(opp, usdCap) {
+  const crvUsd = Number(opp.buyPool?.crvPriceUsd || 0);
+  const quotePerCrv = Number(opp.buyPrice || 0);
+  if (!Number.isFinite(crvUsd) || crvUsd <= 0 || !Number.isFinite(quotePerCrv) || quotePerCrv <= 0) return null;
+  const quoteUsd = crvUsd / quotePerCrv;
+  if (!Number.isFinite(quoteUsd) || quoteUsd <= 0) return null;
+  return usdCap / quoteUsd;
+}
+
 function maybeLogVerbose(line) {
   if (VERBOSE) console.log(line);
 }
@@ -283,7 +293,7 @@ async function main() {
 
   console.log(`Executor chain: ${CHAIN}`);
   console.log(
-    `Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Utilization: ${LOAN_UTILIZATION_BPS} bps | Dry run: ${DRY_RUN} | Verbose: ${VERBOSE}`
+    `Min spread: ${MIN_SPREAD_PCT}% | Loan USD: ${LOAN_USD} | Loan Quote: ${LOAN_QUOTE ?? 'auto'} | Utilization: ${LOAN_UTILIZATION_BPS} bps | MinPoolLiq: ${MIN_POOL_LIQUIDITY_USD} | Dry run: ${DRY_RUN} | Verbose: ${VERBOSE}`
   );
 
   const { allOpportunities } = await scanArbitrage({ sameChainOnly: true });
@@ -313,6 +323,12 @@ async function main() {
       const originalLoanUsd = LOAN_USD;
       const buyLiq = Number(opp.buyPool?.liquidityUsd || 0);
       const sellLiq = Number(opp.sellPool?.liquidityUsd || 0);
+      if (buyLiq < MIN_POOL_LIQUIDITY_USD || sellLiq < MIN_POOL_LIQUIDITY_USD) {
+        console.log(
+          `Skipping ${opp.pair}: low pool liquidity (buy=${buyLiq.toFixed(2)} sell=${sellLiq.toFixed(2)} < min ${MIN_POOL_LIQUIDITY_USD})`
+        );
+        continue;
+      }
       maybeLogVerbose(
         `[liq] pair=${opp.pair} buyDex=${opp.buyDex} sellDex=${opp.sellDex} buyLiqUsd=${buyLiq.toFixed(2)} sellLiqUsd=${sellLiq.toFixed(2)} utilBps=${LOAN_UTILIZATION_BPS}`
       );
@@ -339,7 +355,28 @@ async function main() {
             mode: `usd-notional (${flooredUsd} ${quote})`,
           };
         }
-        return buildLoanAmount(provider, quote, loanAsset);
+        const base = await buildLoanAmount(provider, quote, loanAsset);
+        if (!base.loanAmount) return base;
+
+        // For non-stable quotes, cap LOAN_QUOTE using liquidity-derived USD cap when possible.
+        const quoteCap = estimateQuoteFromUsdCap(opp, dynamicLoanUsd);
+        if (quoteCap && LOAN_QUOTE && quoteCap < LOAN_QUOTE) {
+          const flooredQuoteCap = Math.floor(quoteCap * 1e6) / 1e6;
+          if (flooredQuoteCap <= 0) {
+            return {
+              loanAmount: null,
+              decimals: base.decimals,
+              mode: `liquidity-capped below 1e-6 ${quote} (computed ${quoteCap})`,
+            };
+          }
+          return {
+            loanAmount: ethers.parseUnits(String(flooredQuoteCap), base.decimals),
+            decimals: base.decimals,
+            mode: `quote-notional capped (${flooredQuoteCap} ${quote} from liquidity cap)`,
+          };
+        }
+
+        return base;
       })();
       if (!loanAmount) {
         console.log(`Skipping ${opp.pair}: ${mode}`);
