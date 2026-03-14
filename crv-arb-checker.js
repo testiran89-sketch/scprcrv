@@ -46,12 +46,9 @@ const CHAINS = {
 };
 
 const DEFAULT_PAIRS = [
-  ['CRV', 'WETH'],
-  ['CRV', 'USDC'],
-  ['CRV', 'USDT'],
-  ['CRV', 'DAI'],
-  ['CRV', 'FRAX'],
-  ['CRV', 'cvxCRV'],
+  ['USDC', 'USDT'],
+  ['USDC', 'DAI'],
+  ['USDC', 'WETH'],
 ];
 
 const DEX_ALIAS = {
@@ -68,8 +65,8 @@ const TARGET_DEX_IDS = new Set(Object.keys(DEX_ALIAS));
 const FLASH_LOAN_NOTIONAL_USD = 100_000;
 
 function envPairs() {
-  const base = (process.env.BASE_SYMBOL || 'CRV').trim();
-  const quotes = (process.env.QUOTE_SYMBOLS || 'WETH,USDC,USDT,DAI,FRAX,cvxCRV')
+  const base = (process.env.BASE_SYMBOL || 'USDC').trim();
+  const quotes = (process.env.QUOTE_SYMBOLS || 'USDT,DAI,WETH')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);

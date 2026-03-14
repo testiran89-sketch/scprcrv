@@ -1,4 +1,4 @@
-# CRV Flash-Loan Arbitrage Toolkit
+# USDC Flash-Loan Arbitrage Toolkit
 
 این پروژه 3 بخش اصلی دارد:
 
@@ -44,11 +44,13 @@ cp .env.example .env
 - `BASE_SYMBOL` (توکن پایه)
 - `QUOTE_SYMBOLS` (لیست quote با کاما)
 
-مثال USDC-centric روی Polygon:
+مثال (پیش‌فرض) USDC روی Polygon:
 
 ```bash
 BASE_SYMBOL=USDC QUOTE_SYMBOLS=USDT,DAI,WETH CHAIN=polygon node crv-arb-checker.js --same-chain
 ```
+
+اگر `BASE_SYMBOL` ست نکنی، پیش‌فرض اسکنر `USDC` است.
 
 - حالت عمومی (ممکن است cross-chain هم نشان دهد):
 
@@ -68,7 +70,7 @@ node crv-arb-checker.js --same-chain
 node crv-arb-executor.js
 ```
 
-نکته: executor حالا بر اساس `PAIR` خروجی اسکنر، توکن base را داینامیک برمی‌دارد (دیگر محدود به CRV نیست).
+نکته: executor بر اساس `PAIR` خروجی اسکنر، توکن base را داینامیک برمی‌دارد.
 
 اگر `.env` مقدار `CHAIN=polygon` داشته باشد، executor روی Polygon اجرا می‌شود.
 برای اجرای مستقیم روی Polygon هم می‌توانی اینطور بزنی:
