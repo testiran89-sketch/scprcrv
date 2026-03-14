@@ -30,7 +30,7 @@ try {
 }
 const { scanArbitrage, CHAINS } = require('./crv-arb-checker');
 
-const CHAIN = process.env.CHAIN || 'ethereum';
+const CHAIN = process.env.CHAIN || 'polygon';
 const MIN_SPREAD_PCT = Number(process.env.MIN_SPREAD_PCT || 0.3);
 const LOAN_USD = Number(process.env.LOAN_USD || 100000);
 const LOAN_QUOTE = process.env.LOAN_QUOTE ? Number(process.env.LOAN_QUOTE) : null;
@@ -308,6 +308,15 @@ async function main() {
   }
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const network = await provider.getNetwork();
+  const contractCode = await provider.getCode(FLASH_ARB_CONTRACT);
+  if (!contractCode || contractCode === '0x') {
+    throw new Error(
+      `No contract code at FLASH_ARB_CONTRACT on selected chain. chain=${CHAIN} chainId=${network.chainId} address=${FLASH_ARB_CONTRACT}`
+    );
+  }
+
+  console.log(`Connected chainId: ${network.chainId}`);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
   const contract = new ethers.Contract(FLASH_ARB_CONTRACT, ABI, wallet);
 

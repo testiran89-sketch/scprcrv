@@ -137,7 +137,7 @@ DRY_RUN=false node crv-arb-executor.js
 | `RPC_URL` | آدرس RPC شبکه | - |
 | `PRIVATE_KEY` | کلید خصوصی sender | - |
 | `FLASH_ARB_CONTRACT` | آدرس قرارداد `CrvFlashArb` | - |
-| `CHAIN` | `ethereum` / `polygon` / `bsc` | `ethereum` |
+| `CHAIN` | `ethereum` / `polygon` / `bsc` | `polygon` |
 | `MIN_SPREAD_PCT` | حداقل spread برای اجرا | `0.3` |
 | `LOAN_USD` | نُوشنل وام | `100000` |
 | `LOAN_QUOTE` | برای جفت‌های non-stable (مثل WETH) مقدار وام به واحد quote | unset |
