@@ -1,0 +1,16 @@
+{
+  "name": "crv-flash-arb-toolkit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CRV flash-loan arbitrage scanner and executor",
+  "type": "commonjs",
+  "scripts": {
+    "check": "node --check crv-arb-checker.js && node --check crv-arb-executor.js",
+    "scan": "node crv-arb-checker.js",
+    "scan:same-chain": "node crv-arb-checker.js --same-chain",
+    "exec:dry": "DRY_RUN=true node crv-arb-executor.js"
+  },
+  "dependencies": {
+    "ethers": "^6.13.2"
+  }
+}
