@@ -40,6 +40,16 @@ cp .env.example .env
 
 ### 2.2 اسکن فرصت‌ها
 
+اسکنر قابل تنظیم است:
+- `BASE_SYMBOL` (توکن پایه)
+- `QUOTE_SYMBOLS` (لیست quote با کاما)
+
+مثال USDC-centric روی Polygon:
+
+```bash
+BASE_SYMBOL=USDC QUOTE_SYMBOLS=USDT,DAI,WETH CHAIN=polygon node crv-arb-checker.js --same-chain
+```
+
 - حالت عمومی (ممکن است cross-chain هم نشان دهد):
 
 ```bash
@@ -57,6 +67,8 @@ node crv-arb-checker.js --same-chain
 ```bash
 node crv-arb-executor.js
 ```
+
+نکته: executor حالا بر اساس `PAIR` خروجی اسکنر، توکن base را داینامیک برمی‌دارد (دیگر محدود به CRV نیست).
 
 اگر `.env` مقدار `CHAIN=polygon` داشته باشد، executor روی Polygon اجرا می‌شود.
 برای اجرای مستقیم روی Polygon هم می‌توانی اینطور بزنی:

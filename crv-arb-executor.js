@@ -195,10 +195,10 @@ function applyLiquidityCap(opp, usdNotional) {
 }
 
 function estimateQuoteFromUsdCap(opp, usdCap) {
-  const crvUsd = Number(opp.buyPool?.crvPriceUsd || 0);
-  const quotePerCrv = Number(opp.buyPrice || 0);
-  if (!Number.isFinite(crvUsd) || crvUsd <= 0 || !Number.isFinite(quotePerCrv) || quotePerCrv <= 0) return null;
-  const quoteUsd = crvUsd / quotePerCrv;
+  const baseUsd = Number(opp.buyPool?.basePriceUsd || 0);
+  const quotePerBase = Number(opp.buyPrice || 0);
+  if (!Number.isFinite(baseUsd) || baseUsd <= 0 || !Number.isFinite(quotePerBase) || quotePerBase <= 0) return null;
+  const quoteUsd = baseUsd / quotePerBase;
   if (!Number.isFinite(quoteUsd) || quoteUsd <= 0) return null;
   return usdCap / quoteUsd;
 }
@@ -313,11 +313,11 @@ async function main() {
 
   for (const opp of candidates) {
     try {
-      const { quote } = parsePair(opp.pair);
+      const { base, quote } = parsePair(opp.pair);
       const chainTokens = CHAINS[CHAIN].tokens;
       const loanAsset = normalizeAddress(chainTokens[quote]);
-      const crv = normalizeAddress(chainTokens.CRV);
-      if (!loanAsset || !crv) continue;
+      const baseToken = normalizeAddress(chainTokens[base]);
+      if (!loanAsset || !baseToken) continue;
 
       const adjustedLoanUsd = applyLiquidityCap(opp, LOAN_USD);
       const originalLoanUsd = LOAN_USD;
@@ -383,7 +383,7 @@ async function main() {
         continue;
       }
 
-      const buyLeg = await buildLeg(provider, CHAIN, opp.buyDexId, opp.buyPool.pairAddress, loanAsset, crv, loanAmount, 1n);
+      const buyLeg = await buildLeg(provider, CHAIN, opp.buyDexId, opp.buyPool.pairAddress, loanAsset, baseToken, loanAmount, 1n);
       if (!buyLeg) {
         console.log(`Skipping ${opp.pair}: missing buy leg config for dex=${opp.buyDexId}`);
         continue;
@@ -395,7 +395,7 @@ async function main() {
         CHAIN,
         opp.sellDexId,
         opp.sellPool.pairAddress,
-        crv,
+        baseToken,
         loanAsset,
         0n,
         1n
@@ -412,7 +412,7 @@ async function main() {
       const params = {
         loanAsset,
         loanAmount,
-        crvToken: crv,
+        crvToken: baseToken,
         buyLeg,
         sellLeg,
         minProfit,

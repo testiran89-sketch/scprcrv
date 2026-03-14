@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * CRV Arbitrage Potential Checker
+ * Arbitrage Potential Checker
  *
- * - Fetches CRV pair prices across DEXes via Dexscreener public API (no API key)
+ * - Fetches token pair prices across DEXes via Dexscreener public API (no API key)
  * - Computes buy/sell spread per pair
  * - Estimates gross profit for a 100,000 USD flash loan notionally
  */
@@ -45,7 +45,7 @@ const CHAINS = {
   },
 };
 
-const PAIRS = [
+const DEFAULT_PAIRS = [
   ['CRV', 'WETH'],
   ['CRV', 'USDC'],
   ['CRV', 'USDT'],
@@ -66,6 +66,16 @@ const DEX_ALIAS = {
 
 const TARGET_DEX_IDS = new Set(Object.keys(DEX_ALIAS));
 const FLASH_LOAN_NOTIONAL_USD = 100_000;
+
+function envPairs() {
+  const base = (process.env.BASE_SYMBOL || 'CRV').trim();
+  const quotes = (process.env.QUOTE_SYMBOLS || 'WETH,USDC,USDT,DAI,FRAX,cvxCRV')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!base || !quotes.length) return DEFAULT_PAIRS;
+  return quotes.map((q) => [base, q]);
+}
 
 function lower(x) {
   return (x || '').toLowerCase();
@@ -112,12 +122,17 @@ function extractPriceForPair(pool, baseSymbol, quoteSymbol, tokenMap) {
   return null;
 }
 
-async function getAllPoolsByChain() {
+async function getAllPoolsByChain(baseSymbol) {
   const poolsByChain = {};
 
   for (const [chainName, chainData] of Object.entries(CHAINS)) {
     try {
-      const pools = await fetchTokenPairs(chainData.chainId, chainData.tokens.CRV);
+      const baseToken = chainData.tokens[baseSymbol];
+      if (!baseToken) {
+        poolsByChain[chainName] = [];
+        continue;
+      }
+      const pools = await fetchTokenPairs(chainData.chainId, baseToken);
       poolsByChain[chainName] = pools;
     } catch (err) {
       console.error(`⚠️ Could not fetch ${chainName}: ${err.message}`);
@@ -149,7 +164,7 @@ function collectPricesForPair(pair, poolsByChain) {
         dexId,
         dex: DEX_ALIAS[dexId] || pool.dexId,
         price: px,
-        crvPriceUsd: Number.parseFloat(pool.priceUsd || 0),
+        basePriceUsd: Number.parseFloat(pool.priceUsd || 0),
         liquidityUsd: Number.parseFloat(pool.liquidity?.usd || 0),
         pairAddress: pool.pairAddress,
         url: pool.url,
@@ -214,12 +229,14 @@ function buildBestOpportunity(pairPrices, options = {}) {
 }
 
 async function scanArbitrage(options = {}) {
-  const poolsByChain = await getAllPoolsByChain();
+  const pairs = options.pairs || envPairs();
+  const baseSymbol = options.baseSymbol || pairs[0]?.[0] || 'CRV';
+  const poolsByChain = await getAllPoolsByChain(baseSymbol);
   const allPairPrices = {};
   const bestByPair = [];
   const allOpportunities = [];
 
-  for (const pair of PAIRS) {
+  for (const pair of pairs) {
     const pairName = `${pair[0]}/${pair[1]}`;
     const prices = collectPricesForPair(pair, poolsByChain);
     allPairPrices[pairName] = prices;
@@ -238,7 +255,7 @@ async function scanArbitrage(options = {}) {
 }
 
 function printResults(opps, allPairPrices, sameChainOnly = false) {
-  console.log('\n=== CRV Arbitrage Scanner (Public APIs, no key) ===');
+  console.log('\n=== Arbitrage Scanner (Public APIs, no key) ===');
   console.log(`Flash-loan notional (assumed): $${FLASH_LOAN_NOTIONAL_USD.toLocaleString()}`);
   console.log(`Mode: ${sameChainOnly ? 'Same-chain only (flash-loan executable)' : 'Cross-chain allowed (informational)'}`);
   console.log('');
@@ -295,9 +312,10 @@ if (require.main === module) {
 
 module.exports = {
   CHAINS,
-  PAIRS,
+  PAIRS: DEFAULT_PAIRS,
   DEX_ALIAS,
   FLASH_LOAN_NOTIONAL_USD,
+  envPairs,
   scanArbitrage,
   buildOpportunities,
 };
